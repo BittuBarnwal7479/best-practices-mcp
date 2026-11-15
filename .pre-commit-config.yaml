@@ -1,0 +1,34 @@
+repos:
+  - repo: local
+    hooks:
+      - id: python-quality
+        name: Check Python formatting, lint and dependency consistency
+        entry: make quality
+        language: system
+        pass_filenames: false
+        files: ^((src|tests|examples|scripts)/.*\.py$|pyproject\.toml$|uv\.lock$|Makefile$|\.python-version$|\.pre-commit-config\.yaml$)
+      - id: lock-check
+        name: Check Python lock and bootstrap inventory
+        entry: make lock-check
+        language: system
+        pass_filenames: false
+        files: ^(pyproject\.toml|uv\.lock|Makefile|\.python-version|\.pre-commit-config\.yaml|scripts/dev_tools\.py)$
+      - id: catalog-check
+        name: Check catalog reproduction and upstream hashes
+        entry: make catalog-check
+        language: system
+        pass_filenames: false
+        files: ^(vendor/|src/best_practices_mcp/data/|scripts/generate_catalog\.py$|pyproject\.toml$|uv\.lock$|Makefile$|\.gitattributes$|\.pre-commit-config\.yaml$)
+      - id: offline-tests
+        name: Run offline regression and MCP integration tests
+        entry: make test
+        language: system
+        pass_filenames: false
+        # Tests may assert documentation content, so every commit needs the suite.
+        always_run: true
+  - repo: https://github.com/kjanat/actionlint
+    rev: 220b76cfa568e00ed8b3c476898f849a722b88e2 # frozen: v1.17.1
+    hooks:
+      - id: actionlint
+        language_version: '1.27.4'
+        files: ^\.github/workflows/.*\.ya?ml$

@@ -236,7 +236,8 @@ def test_qualification_receives_exact_candidates_without_rebuilding(project, mon
     assert {path.suffix for path, _ in calls} == {".whl", ".gz"}
 
 
-def test_failed_candidate_validation_replaces_previous_pass(project):
+def test_failed_candidate_validation_replaces_previous_pass(project, monkeypatch):
+    monkeypatch.setattr(release, "make_version", lambda: "4.4.1")
     output = project / "evidence.json"
     output.write_text('{"status":"passed","artifacts":{"old.whl":{}}}')
     output.with_suffix(".log").write_text("Old successful installation")
@@ -247,6 +248,7 @@ def test_failed_candidate_validation_replaces_previous_pass(project):
     evidence = json.loads(output.read_text())
     assert evidence["status"] == "failed"
     assert evidence["artifacts"] == {}
+    assert evidence["toolchain"]["make"] == "4.4.1"
     assert "Old successful" not in output.with_suffix(".log").read_text()
 
 
@@ -287,3 +289,36 @@ def test_release_configuration_tracks_package_and_documentation_versions():
         assert release.Version(manifest["."]) == release.Version(
             release.project_metadata(ROOT)["version"]
         )
+
+
+def test_sbom_cli_preserves_isolated_interpreter_and_absolute_output(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base = tmp_path / "base-python"
+    base.touch()
+    interpreter = tmp_path / "tools-python"
+    try:
+        interpreter.symlink_to(base)
+    except OSError:
+        pytest.skip("Creating interpreter symlinks requires additional Windows privileges")
+    calls = []
+
+    def check(root, dist, output, allow_downloads, *, sbom_python):
+        calls.append((output, sbom_python))
+        return {"status": "passed"}
+
+    monkeypatch.setattr(release, "check_candidate", check)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_check.py",
+            "artifacts",
+            "--allow-downloads",
+            "--sbom-python",
+            "tools-python",
+            "--output",
+            "reports/evidence.json",
+        ],
+    )
+    assert release.main() == 0
+    assert calls == [(tmp_path / "reports/evidence.json", interpreter)]
