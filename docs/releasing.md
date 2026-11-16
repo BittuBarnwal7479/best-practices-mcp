@@ -4,6 +4,8 @@ This is an independent Reponomics project. It is not affiliated with, sponsored 
 
 Release automation targets `reponomics/best-practices-mcp`. Prepare the repository privately and make it public immediately before the first release. Configure and verify GitHub CI, release approvals and PyPI Trusted Publishing before enabling publication.
 
+This document is the maintainer runbook. Consumers should follow [Release verification](verification.md) for integrity and authenticity checks, expected identities, evidence scope and limitations.
+
 ## Repository setup
 
 Use `main` as the default branch. Require pull requests, passing required checks and signed commits. Enable squash merging only, with the PR title as the default squash commit message. The `Semantic PR / Validate PR title` check validates Conventional Commit titles on PRs targeting `main`; it does not validate every intermediate branch commit. Squash-only merging and the PR-title default make the resulting main-branch history conventional. The deliberate empty `Initial commit` is the bootstrap exception.
@@ -68,15 +70,15 @@ The non-default `release-tools` group pins CycloneDX Python in an isolated tool 
 
 Runtime OSV inventories come from pip's actual installation report, excluding the unpublished project root and avoiding unrelated bootstrap tooling. Public pip reports retain selected package identities and download hashes with local paths, credentials and URL queries removed. The separate tooling SBOM exports the uv/npm/actionlint inventory; Node and workflow tooling are not represented as MCP runtime dependencies. The Go standard-library version is checked separately for vulnerabilities. The release uses the same reviewed license policy as PR CI, including exact-version metadata corrections, the Docutils exception, and the permissive 0BSD allowlist entry used by release tooling.
 
-Consumers can download the release assets and verify `SHA256SUMS` with their platform's SHA-256 utility. They can also verify the actual wheel or source archive against the expected repository, workflow, tag and commit:
+Use the [consumer verification instructions](verification.md) after publication. Verify GitHub's immutable-release attestation and the local assets, the distributions' workflow provenance and SBOM attestations, and PyPI's publish attestations. Retain the release/run identity and verification results when recording release QA. Checksums alone are not authentication.
 
-```sh
-gh attestation verify ARCHIVE --repo reponomics/best-practices-mcp --signer-workflow reponomics/best-practices-mcp/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z --source-digest FULL_RELEASE_COMMIT_SHA
-```
+These controls support the project's OpenSSF Best Practices and OSPS Baseline evaluation goal. They do not establish a complete assessment or a SLSA Build Level 3 claim. Stronger reusable-builder isolation and contributor/reviewer governance remain separate workstreams.
 
-Replace `ARCHIVE`, the tag and commit with the actual release values. To verify the reference-installation SBOM attestation, add `--predicate-type https://cyclonedx.org/bom`. Signed bundles are also attached for offline-verification workflows; follow [GitHub's verification guidance](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/verify-attestations-offline). Keep PyPI's publish attestation as complementary evidence of which Trusted Publisher uploaded the distribution.
+### First verified publication
 
-These controls support the project's OpenSSF Best Practices and OSPS Baseline evaluation goal. They do not establish a complete assessment or a SLSA Build Level 3 claim. Record the first successful hosted candidate run, approval, scans, attached assets, signature verification and same-byte PyPI publication before marking those controls evidenced. Stronger reusable-builder isolation and contributor/reviewer governance remain separate workstreams.
+On 2026-11-15, [0.2.0-beta.3](https://github.com/reponomics/best-practices-mcp/releases/tag/v0.2.0-beta.3) completed [release run 43759677395, attempt 1](https://github.com/reponomics/best-practices-mcp/actions/runs/43759677395) at commit `b222cabb63cbd5d44475b965e44ee349eee161ef`. The maintainer approved the `pypi` deployment. All four release jobs succeeded, including qualification, vulnerability and license scans, attestation generation, PyPI publication and immutable GitHub finalization.
+
+Post-publication checks verified all 31 downloaded asset digests, all 27 checksum-manifest entries, the GitHub release attestation, both distributions' workflow provenance, both signed runtime SBOMs and both PyPI publish attestations. The PyPI wheel and source archive matched the GitHub distribution hashes. This is a record for that release, not a substitute for verifying later releases or evidence that live browser QA has passed.
 
 ## Local candidate checks
 
@@ -102,6 +104,20 @@ make release-check RELEASE_ARGS='--tag v0.2.0-beta.1 --prerelease true --sha FUL
 The manifest must agree with the candidate tag and package version. A successful local build does not establish PyPI availability or the configured GitHub approval controls.
 
 ## Verify the published beta and advance to stable
+
+The separate [Verify published release workflow](../.github/workflows/verify-release.yml) is a convenience for following the commands in [the verification guide](verification.md). Its four numbered steps authenticate downloaded GitHub assets and checksums, verify online and attached distribution provenance, verify the local distributions against PyPI's attestations, and verify runtime SBOM signatures. It uses the same identity constraints as the guide. The PyPI verifier is installed from the locked `verification-tools` group instead of the guide's interactive `uvx` command. Downloaded release packages are never installed or executed.
+
+The workflow runs after a successful `Publish to PyPI` run, using that run's tag and commit as the expected identity. It uses `workflow_run` because finalization publishes with `GITHUB_TOKEN`, whose release event does not trigger another workflow. The workflow and tool lockfile come from the default branch. It has only read access.
+
+A failed command fails the workflow. Investigate the failed step and its output; the `release-verification-RUN_ID-ATTEMPT` artifact retains command logs for 30 days, including output produced before a failure. The workflow does not roll back or unpublish anything. A green run adds no independent provenance or security assurance. The guide's human inspection of publisher metadata, workflow jobs, SBOM contents and scan evidence remains manual; this workflow does not reinterpret those reports, reconstruct CI history, rerun OSV or perform live browser QA.
+
+After the workflow reaches `main`, maintainers can check an existing release or rerun after investigating a failure. Supply the expected full commit SHA from the release/tag history, as in the guide:
+
+```sh
+gh workflow run verify-release.yml --repo reponomics/best-practices-mcp --ref main -f tag=v0.2.0-beta.3 -f commit=b222cabb63cbd5d44475b965e44ee349eee161ef
+```
+
+For a local check, follow [the verification guide](verification.md) directly; its commands cover POSIX shells and Windows PowerShell. There is no project script, Make target or project environment to set up. These checks are optional for contributors. The example starts with beta.3, when the documented release evidence was introduced.
 
 Immediately after publication, verify fresh installation from production PyPI using the README's exact `uvx` and `pipx` commands. Check the normalized version, installed executable and actual MCP discovery/calls with a disposable data root; do not substitute a source-checkout or cached development install. Verify the reference-host instructions and retain the installed wheel/source archive identity in the release QA record. Then exercise the [local live browser runbook](live-browser-qa.md) against PolicyChecks silver using that published server. The first live browser check is deliberately deferred until after beta publication; record it as pending before then, not as passed or waived. It checks populated edit forms without saving the application.
 
