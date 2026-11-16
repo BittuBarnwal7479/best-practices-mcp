@@ -7,6 +7,7 @@ This is an independent Reponomics project, not affiliated with, sponsored by, en
 | Document | Purpose |
 | --- | --- |
 | [Roadmap](roadmap.md) | Planned work and proposals under consideration |
+| [MCP interaction log](interaction-log.md) | Working table of real sessions, intended to grow through voluntary user reports |
 | [Contributing](../CONTRIBUTING.md) | Development setup, validation commands and MCP client tooling |
 | [Server specification](specification.md) | Supported behavior, ten tools and host/server responsibilities |
 | [Design decisions](design.md) | Human-review boundary, deliberate exclusion of direct saves and documented-procedure authority |
@@ -34,3 +35,5 @@ The [project README](../README.md) covers installation, host configuration and e
 [Initial implementation planning](planning/initial-implementation/README.md) preserves the original scope, reviews and development decisions. These historical records do not override the maintained documentation.
 
 The [live Chrome QA record](live-qa/2026-11-09/README.md) includes the approved screenshots, associated retained proposal URLs and historical script reference, and the limits of the exercised transfer cases.
+
+The [Baseline Level 1 milestone](live-qa/2026-11-16/README.md) records the project's own application workflow through the MCP, maintainer submission, and confirmation of 100% saved completion.

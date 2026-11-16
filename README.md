@@ -1,5 +1,7 @@
 # Best Practices MCP
 
+[![OpenSSF Baseline — project 16754](https://www.bestpractices.dev/projects/16754/baseline.svg)](https://www.bestpractices.dev/en/projects/16754/baseline-1)
+
 ## Description
 
 Best Practices MCP lets an MCP-compatible assistant look up projects on the OpenSSF Best Practices Badge website (BadgeApp), inspect badge criteria and progress, retrieve badge images and README snippets, prepare draft answers, and generate proposed updates for review in the browser.
@@ -81,6 +83,14 @@ Default storage locations are:
 | Windows | `%LOCALAPPDATA%/bestpractices-mcp` |
 
 To choose another location, set `BESTPRACTICES_DATA_DIR` in the server's environment through your MCP host. Use an absolute path; `~` is not expanded. Avoid simultaneous writers from separate server processes or external editors to the same project draft. After an uncertain update result, use `read_draft` before deciding whether to issue another patch. See [persistence boundaries](docs/architecture.md#optional-local-persistence).
+
+If you prefer a dot directory in your home directory, add an `env` entry to the server configuration, for example `"env": {"BESTPRACTICES_DATA_DIR": "/home/yourname/.bestpractices-mcp"}`. Replace that example with your actual absolute home path (on macOS, typically `/Users/yourname/.bestpractices-mcp`). Changing the setting does not move existing drafts: either keep using their original directory or stop the server instances and move the existing `projects` directory into the new data directory, taking care not to overwrite drafts already there.
+
+## Share your experience
+
+Help improve best-practices-mcp by [sharing how you used it](https://github.com/reponomics/best-practices-mcp/issues/new?template=usage_report.yml). A brief account in your own words is enough: what you tried, how it went, which assistant/model(s) you used if known, and any additional feedback. Successful, partial, and unsuccessful interactions are all welcome.
+
+Reports are voluntary and self-reported. We may summarize them in the [interaction log](docs/interaction-log.md), with a link to the original issue.
 
 ## Documentation
 
