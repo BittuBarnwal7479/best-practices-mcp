@@ -15,9 +15,8 @@ endif
 PIP ?= "$(PYTHON)" -m pip
 UV ?= uv
 OSV_SCANNER ?= osv-scanner
-GO ?= go
 # Keep in sync with the license scan in .github/workflows/osv-scanner.yml.
-OSV_LICENSES := MIT,MIT-0,BSD-2-Clause,BSD-3-Clause,Apache-2.0,ISC,PSF-2.0,MPL-2.0,BlueOak-1.0.0,0BSD,Unlicense
+OSV_LICENSES := MIT,MIT-0,BSD-2-Clause,BSD-3-Clause,Apache-2.0,ISC,PSF-2.0,MPL-2.0,0BSD,Unlicense
 RELEASE_DIST ?= build/release/dist
 RELEASE_EVIDENCE ?= build/release/evidence.json
 RELEASE_ARGS ?=
@@ -34,7 +33,7 @@ export UV_PROJECT_ENVIRONMENT := $(VENV)
 # Evidence must identify this Make executable, including gmake/custom paths.
 export VERIFICATION_MAKE := $(MAKE)
 
-.PHONY: help setup quality tooling-check ci-environment check test format build run test-contract test-catalog test-protocol test-package catalog catalog-check test-network test-api smoke-live
+.PHONY: help setup quality typecheck tooling-check ci-environment check test format build run test-contract test-catalog test-protocol test-package catalog catalog-check test-network test-api smoke-live
 
 help: ## Show available development commands (no project environment required)
 	@"$(UV)" run --no-project $(UV_PYTHON_ARG) python scripts/dev_tools.py help
@@ -47,13 +46,16 @@ quality: tooling-check ## Check formatting, lint and installed dependency consis
 	"$(PYTHON)" -m ruff check src tests scripts
 	$(PIP) check
 
-check: quality ## Run quality checks and the offline test suite
+typecheck: ## Check types with mypy: strict for the package and scripts, relaxed for tests
+	"$(PYTHON)" -m mypy
+
+check: quality typecheck ## Run quality checks, type checks and the offline test suite
 	"$(MAKE)" test
 
 .PHONY: validate
 
 validate: ## Run contributor checks and the coverage floor (OSV scans run in CI)
-	"$(MAKE)" -k lock-check quality test-coverage catalog-check workflow-check
+	"$(MAKE)" -k lock-check quality typecheck test-coverage catalog-check
 
 tooling-check: ## Verify the uv bootstrap requirement matches its locked audit inventory
 	"$(UV)" run --no-project $(UV_PYTHON_ARG) python scripts/dev_tools.py tooling-check
@@ -114,9 +116,16 @@ PROJECT_ID ?= 1
 smoke-live: ## Opt-in paced public GET compatibility check (PROJECT_ID=1)
 	"$(PYTHON)" scripts/smoke_live.py --project-id "$(PROJECT_ID)"
 
+.PHONY: qa-live
+
+LEVEL ?= passing
+QA_ARGS ?=
+qa-live: ## Opt-in live QA of tools and resources for a project's saved answers (PROJECT_ID=1 LEVEL=passing)
+	"$(PYTHON)" scripts/qa_live.py --project-id "$(PROJECT_ID)" --level "$(LEVEL)" $(QA_ARGS)
+
 .PHONY: smoke-badges
 
-smoke-badges: ## Opt-in paced JSON/SVG badge compatibility check (PROJECT_ID=1, read-only)
+smoke-badges: ## Opt-in paced SVG badge compatibility check (PROJECT_ID=1, read-only)
 	"$(PYTHON)" scripts/smoke_badges.py --project-id "$(PROJECT_ID)"
 
 .PHONY: test-upstream test-documents
@@ -140,16 +149,13 @@ test-coverage: ## Measure server coverage and enforce the configured total floor
 check-fresh-package: ## Build/install wheel and sdist in fresh temporary venvs (downloads dependencies)
 	"$(PYTHON)" scripts/check_fresh_package.py --allow-downloads --output build/verification/fresh-package.json
 
-.PHONY: lock lock-check workflow-check release-check release-build release-artifacts release-qualify
+.PHONY: lock lock-check release-check release-build release-artifacts release-qualify
 
 lock: ## Resolve project metadata into the cross-platform development lockfile (network)
 	"$(UV)" lock $(UV_PYTHON_ARG)
 
 lock-check: tooling-check ## Verify the committed lockfile matches project metadata
 	"$(UV)" lock --check $(UV_PYTHON_ARG)
-
-workflow-check: ## Lint tracked GitHub Actions workflows through managed actionlint
-	"$(PYTHON)" -m pre_commit run actionlint --all-files
 
 .PHONY: setup-hooks pre-commit-check
 
@@ -160,11 +166,6 @@ pre-commit-check: ## Run all configured hooks against tracked files (no live tes
 	"$(PYTHON)" -m pre_commit run --all-files
 
 .PHONY: scan-vulnerabilities scan-licenses
-
-.PHONY: actionlint-inventory
-
-actionlint-inventory: ## Generate CI-only actionlint inventory (network; requires Go and PyYAML)
-	"$(PYTHON)" scripts/actionlint_inventory.py --go "$(GO)"
 
 scan-vulnerabilities: ## Scan the Python lockfile for vulnerabilities (network; requires OSV-Scanner)
 	"$(OSV_SCANNER)" --config=osv-scanner.toml --lockfile=uv.lock --no-resolve --format=sarif --output-file=osv-scanner.sarif

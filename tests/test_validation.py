@@ -1,7 +1,8 @@
-"""Required advisory-validation contract from docs/specification.md §4.
+"""Required advisory-validation contract.
 
-The human-readable predicate cases exercise the agreed minimum length, exact
-comment prefix, and URL-pattern rules independently of upstream implementation.
+The contract is the Validation section of docs/reference/specification.md. The human-readable
+predicate cases exercise the agreed minimum length, exact comment prefix, and URL-pattern rules
+independently of upstream implementation.
 """
 
 import json
@@ -10,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from best_practices_mcp.contracts import validate_output
-from best_practices_mcp.criteria import get_criteria
+from best_practices_mcp.criteria import catalog_levels, criterion_definitions, get_criteria
 from best_practices_mcp.errors import DomainError
 from best_practices_mcp.validation import contains_url, usable_justification, validate_draft
 
@@ -46,7 +47,7 @@ def test_empty_document_does_not_imply_whole_application_checked() -> None:
 def test_represented_shape_checks_and_conditional_skips_overlap(
     status: object, reason: str
 ) -> None:
-    draft = {"contribution_justification": "https://a.b"}
+    draft: dict[str, object] = {"contribution_justification": "https://a.b"}
     if status is not None:
         draft["contribution_status"] = status
     result = validate_draft(8, "passing", draft)
@@ -83,8 +84,8 @@ def test_other_level_invalid_values_are_not_selected_level_findings() -> None:
 
 
 def test_all_catalog_flags_apply_at_their_own_levels() -> None:
-    for level in get_criteria()["levels"]:
-        for criterion in get_criteria(level)["criteria"]:
+    for level in catalog_levels():
+        for criterion in criterion_definitions(level):
             for status in ("Met", "Unmet", "N/A"):
                 result = validate_draft(8, level, {criterion["status_field"]: status})
                 codes = {finding["code"] for finding in result["findings"]}

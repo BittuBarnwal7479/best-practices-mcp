@@ -36,9 +36,10 @@ async def main():
     from best_practices_mcp.server import create_server
     assert Path(best_practices_mcp.__file__).is_relative_to(Path(sys.argv[1]))
     index = get_criteria()
-    assert len(index["levels"]) == 6
-    for level in index["levels"]:
-        result = get_criteria(level)
+    levels = [entry["level"] for entry in index["levels"]]
+    assert len(levels) == 6
+    for level in levels:
+        result = get_criteria(level, detail="full")
         validate_output("get_criteria", result)
         assert result["criteria"]
     assert provenance()["revision"] == sys.argv[2], "Installed revision differs from manifest"
@@ -46,13 +47,13 @@ async def main():
     server = create_server()
     tool_names = [tool.name for tool in await server.list_tools()]
     assert tool_names == ["build_draft", "find_project", "get_criteria",
-                          "get_project_badge_status", "get_project_badge_svg",
-                          "get_project_progress",
+                          "get_project_answers", "get_project_badge_svg",
+                          "get_project_status",
                           "prepare_update_url", "read_draft",
                           "update_draft", "validate_draft"]
     result = await server.call_tool("get_criteria", {"level": "passing"})
     assert result.structured_content["criteria"]
-    print(json.dumps({"installed_catalog": "passed", "levels": index["levels"],
+    print(json.dumps({"installed_catalog": "passed", "levels": levels,
                       "network": "disabled", "live_tools": tool_names}))
 # Windows needs an internal loopback socketpair to construct the event loop.
 # All application imports/calls run afterward with every connection denied.
@@ -96,7 +97,7 @@ def check_archives(dist: Path) -> Path:
             "/.github/.release-please-manifest.json",
         ):
             assert any(name.endswith(suffix) for name in names), suffix
-        assert not any("/docs/live-qa/" in name for name in names)
+        assert not any("/live-qa/" in name for name in names)
         assert not any(name.endswith((".rb", ".erb", ".jbuilder")) for name in names)
     return wheel
 

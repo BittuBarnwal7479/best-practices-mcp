@@ -1,13 +1,18 @@
 """Strict domain contracts for the bounded MCP tool surface.
 
-Models do not register tools or implement their future application behavior.
-Optional inputs use the public Pydantic omission sentinel: null is not omission.
+Models do not register tools or implement their application behavior. Results are
+strict. Tool arguments accept two documented variations of their published schema:
+a null optional argument counts as omitted, and identifiers may arrive as
+integer-valued numbers or decimal strings. Criterion lookups also ignore letter case
+and the separator; criteria.py holds that rule.
 """
 
-from typing import Annotated, Literal, Self
+import re
+from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import (
     MISSING,
+    AfterValidator,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -19,6 +24,7 @@ from pydantic import (
 from pydantic import (
     JsonValue as PydanticJsonValue,
 )
+from pydantic_core import PydanticCustomError
 
 from best_practices_mcp.documents import validate_document
 from best_practices_mcp.errors import DomainError
@@ -28,9 +34,30 @@ Section = Literal[
     "passing", "silver", "gold", "baseline-1", "baseline-2", "baseline-3", "choose_section"
 ]
 BadgeFamily = Literal["best_practices", "baseline"]
+Detail = Literal["index", "full"]
+StatusFilter = Literal["Met", "Unmet", "N/A", "?"]
 LEVELS: tuple[Level, ...] = ("passing", "silver", "gold", "baseline-1", "baseline-2", "baseline-3")
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
+
+
+def _integer_argument(value: object) -> object:
+    """Convert 123.0 and "123" to 123; Booleans and other values stay invalid."""
+    if type(value) is float and value.is_integer():
+        return int(value)
+    if type(value) is str and re.fullmatch(r"[0-9]{1,18}", value):
+        return int(value)
+    return value
+
+
+PositiveIntArgument = Annotated[PositiveInt, BeforeValidator(_integer_argument)]
+
+
+def argument_error(field: str, problem: str) -> PydanticCustomError:
+    """Name the argument responsible for a rule that spans several arguments."""
+    return PydanticCustomError(
+        "argument", "{field} {problem}", {"field": field, "problem": problem}
+    )
 
 
 def _json_document(value: object) -> object:
@@ -66,68 +93,169 @@ class Model(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
 
 
-class CriteriaInput(Model):
-    model_config = ConfigDict(json_schema_extra={"dependentRequired": {"criterion_ids": ["level"]}})
+class Input(Model):
+    """Tool arguments; a null value for a declared argument is treated as omitted."""
 
-    level: Level | MISSING = MISSING
-    criterion_ids: (
-        Annotated[list[str], Field(json_schema_extra={"uniqueItems": True})] | MISSING
-    ) = MISSING
+    null_is_invalid: ClassVar[frozenset[str]] = frozenset()
 
-    @field_validator("criterion_ids")
+    @model_validator(mode="before")
     @classmethod
-    def unique_ids(cls, value: list[str]) -> list[str]:
-        if len(value) != len(set(value)):
-            raise ValueError("criterion_ids must be distinct")
-        return value
+    def omit_null_arguments(cls, data: object) -> object:
+        if type(data) is not dict:
+            return data
+        omittable = cls.model_fields.keys() - cls.null_is_invalid
+        return {
+            key: value for key, value in data.items() if value is not None or key not in omittable
+        }
+
+
+def _distinct(value: list[Any]) -> list[Any]:
+    if len(value) != len(set(value)):
+        raise ValueError("items must be distinct")
+    return value
+
+
+DistinctIds = Annotated[
+    list[str], AfterValidator(_distinct), Field(json_schema_extra={"uniqueItems": True})
+]
+CRITERION_IDS = (
+    "Criterion IDs within level, as listed by get_criteria. Omit to select every criterion "
+    "of the level. An ID the level does not define is refused with invalid_criterion."
+)
+
+
+class CriteriaInput(Input):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "dependentRequired": {
+                "criterion_ids": ["level"],
+                "category": ["level"],
+                "detail": ["level"],
+            }
+        }
+    )
+
+    level: Level | MISSING = Field(
+        default=MISSING, description="Badge level whose criteria to select."
+    )
+    criterion_ids: DistinctIds | MISSING = Field(default=MISSING, description=CRITERION_IDS)
+    category: str | MISSING = Field(
+        default=MISSING,
+        description=(
+            "Return only one category of the level, such as Security. The level index lists "
+            "each level's categories. Cannot be combined with criterion_ids."
+        ),
+    )
+    detail: Detail | MISSING = Field(
+        default=MISSING,
+        description=(
+            "index returns each criterion's ID, category and requirement; full adds the "
+            "official text, field names and justification rules. Defaults to full when "
+            "criterion_ids is given, otherwise index."
+        ),
+    )
 
     @model_validator(mode="after")
-    def filter_requires_level(self) -> Self:
-        if self.criterion_ids is not MISSING and self.level is MISSING:
-            raise ValueError("criterion_ids requires level")
+    def selection_rules(self) -> Self:
+        if self.level is MISSING:
+            for field in ("criterion_ids", "category", "detail"):
+                if field in self.model_fields_set:
+                    raise argument_error(field, "requires level")
+        if self.category is not MISSING and self.criterion_ids is not MISSING:
+            raise argument_error("category", "cannot be combined with criterion_ids")
         return self
 
 
-class FindProjectInput(Model):
-    query: str
-    page: PositiveInt = 1
+class FindProjectInput(Input):
+    query: str = Field(
+        description=(
+            "A project ID, the project's exact repository or homepage URL, or search text."
+        )
+    )
+    page: PositiveIntArgument = Field(
+        default=1, description="Result page, starting at 1. Use next_page from the last result."
+    )
 
 
-class ProjectInput(Model):
-    project_id: PositiveInt
+class ProjectInput(Input):
+    project_id: PositiveIntArgument = Field(
+        description="BadgeApp project ID, as returned by find_project."
+    )
 
 
-class ProgressInput(CriteriaInput, ProjectInput):
-    pass
-
-
-class BadgeStatusInput(ProjectInput):
-    family: BadgeFamily = Field(
-        default="best_practices",
-        description="Badge family to observe; returned as effective family.",
+class AnswersInput(ProjectInput):
+    level: Level = Field(description="Badge level whose saved answers to return.")
+    criterion_ids: DistinctIds | MISSING = Field(default=MISSING, description=CRITERION_IDS)
+    statuses: (
+        Annotated[
+            list[StatusFilter],
+            AfterValidator(_distinct),
+            Field(json_schema_extra={"uniqueItems": True}),
+        ]
+        | MISSING
+    ) = Field(
+        default=MISSING,
+        description=(
+            "Return only criteria whose saved status is one of these. BadgeApp saves ? for "
+            "every criterion until an answer is chosen."
+        ),
+    )
+    include_justifications: bool = Field(
+        default=True, description="Set false to return statuses without justification text."
     )
 
 
 class BadgeSVGInput(ProjectInput):
     family: BadgeFamily = Field(
-        description="Badge family whose SVG and README snippet to retrieve."
+        description=(
+            'Badge series whose SVG and README snippet to retrieve: "best_practices" is the '
+            'metal series (passing, silver, gold); "baseline" is the Baseline series.'
+        )
     )
 
 
-class BuildDraftInput(Model):
-    draft: Draft
-    changes: Draft = Field(default_factory=dict)
+DRAFT_FORMAT = (
+    'A flat JSON object in draft format: "<criterion_id>_status" is "Met", "Unmet", "N/A" '
+    'or "?"; "<criterion_id>_justification" is text; name, description, license and '
+    "implementation_languages are project metadata."
+)
+CHANGES = f"Fields to set. {DRAFT_FORMAT} A null value removes the field."
+
+
+class BuildDraftInput(Input):
+    draft: Draft = Field(description="The document to change; {} starts an empty one.")
+    changes: Draft = Field(default_factory=dict, description=CHANGES)
 
 
 class UpdateDraftInput(ProjectInput):
-    changes: Draft
+    changes: Draft = Field(description=CHANGES)
 
 
 class DraftSourceInput(ProjectInput):
+    null_is_invalid: ClassVar[frozenset[str]] = frozenset({"draft"})
+
     section: Section = Field(
-        description="Badge level, or choose_section for human selection in BadgeApp."
+        description=(
+            "Badge level, with the same six values as level in the read tools, or "
+            "choose_section for human selection in BadgeApp."
+        )
     )
-    draft: Draft | MISSING = MISSING
+    draft: Draft | MISSING = Field(
+        default=MISSING,
+        description=(
+            "A complete draft to use instead of the stored one. Omit it to use the draft "
+            "stored by update_draft. " + DRAFT_FORMAT
+        ),
+    )
+
+    @field_validator("draft", mode="before")
+    @classmethod
+    def explicit_draft(cls, value: object) -> object:
+        if value is None:
+            raise ValueError(
+                "must not be null; omit it to use the stored draft, or pass {} for an empty one"
+            )
+        return value
 
 
 class NoOverrides(Model):
@@ -149,7 +277,11 @@ Overrides = NoOverrides | AllOverrides | FieldOverrides
 class PrepareURLInput(DraftSourceInput):
     overrides: Overrides = Field(
         default_factory=lambda: NoOverrides(mode="none"),
-        description="none fills unknown answers; all or fields overrides supplied answers.",
+        description=(
+            '{"mode":"none"} proposes values only where BadgeApp has no answer; '
+            '{"mode":"all"} also replaces saved answers for every supplied field; '
+            '{"mode":"fields","fields":[...]} replaces saved answers only for the named fields.'
+        ),
     )
 
 
@@ -164,6 +296,12 @@ SchemaVersion = Annotated[Literal[1], BeforeValidator(_schema_version)]
 
 class Result(Model):
     schema_version: SchemaVersion
+
+
+class ResultV2(Model):
+    """Success payloads whose interface changed after the first published version."""
+
+    schema_version: Annotated[Literal[2], BeforeValidator(_schema_version)]
 
 
 class CatalogRef(Model):
@@ -211,10 +349,12 @@ class Identity(Model):
 
 
 ErrorCode = Literal[
+    "invalid_arguments",
     "invalid_document",
     "invalid_field",
     "invalid_level",
     "invalid_criterion",
+    "invalid_category",
     "invalid_query",
     "invalid_override",
     "draft_not_found",
@@ -270,14 +410,32 @@ class Criterion(Model):
             "Whether Met requires a URL in its justification; implies met_justification_required."
         )
     )
-    source_url: str
 
 
-class GetCriteriaResult(Result):
+class CriterionSummary(Model):
+    criterion_id: str
+    category: str | None
+    requirement: str | None
+
+
+class LevelSummary(Model):
+    level: Level
+    criterion_count: NonNegativeInt
+    categories: list[str]
+
+
+class CriteriaCatalogRef(CatalogRef):
+    text_source_url: str = Field(description="Source of the description and details text.")
+
+
+class GetCriteriaResult(ResultV2):
     level: Level | None
-    levels: list[Level]
-    criteria: list[Criterion]
-    catalog: CatalogRef
+    detail: Detail | None = Field(description="Form of the criteria rows; null without a level.")
+    levels: list[LevelSummary] = Field(
+        description="Every level when no level is selected, otherwise the selected level."
+    )
+    criteria: list[Criterion] | list[CriterionSummary]
+    catalog: CriteriaCatalogRef
 
 
 class Candidate(Model):
@@ -295,39 +453,47 @@ class FindProjectResult(Result):
     observation: SearchObservation
 
 
-class Summary(Model):
+class LevelStatus(Model):
     level: Level
-    upstream_percentage: float | int | None
+    percentage: float | int | None = Field(
+        description="Percentage complete as BadgeApp reports it; null when it reports none."
+    )
+    achieved_at: str | None = Field(
+        description="When BadgeApp recorded the level as achieved; null if it has not."
+    )
+    lost_at: str | None = Field(
+        description="When BadgeApp recorded the level as lost after achieving it, if ever."
+    )
 
 
-class SummaryMetadata(Model):
-    badge_level: JsonValue | MISSING = MISSING
-    tiered_percentage: JsonValue | MISSING = MISSING
-    baseline_tiered_percentage: JsonValue | MISSING = MISSING
-
-
-class SavedCriterion(Model):
-    criterion_id: str
-    status_present: bool
-    status: JsonValue
-    justification_present: bool
-    justification: JsonValue
-
-
-class GetProjectProgressResult(Result):
+class GetProjectStatusResult(Result):
     project: Project
-    level: Level | None
-    summaries: list[Summary]
-    answers: Draft
-    criteria: list[SavedCriterion]
+    badge_level: str | None = Field(
+        description="The Best Practices badge level BadgeApp reports, such as in_progress."
+    )
+    levels: list[LevelStatus]
+    updated_at: str | None = Field(description="When the project entry was last updated.")
+    observation: Observation
+
+
+class GetProjectAnswersResult(Result):
+    project: Project
+    level: Level
+    answers: Draft = Field(
+        description=(
+            "Saved fields of the criteria that matched the filters, in draft format. Each has "
+            "its status field; an empty justification has no field."
+        )
+    )
+    statuses_not_retrieved: list[str] = Field(
+        description=(
+            "Selected criteria whose status was missing from BadgeApp's response. Normally "
+            "empty; an entry is a retrieval failure, not an answer."
+        )
+    )
+    level_criterion_count: NonNegativeInt = Field(description="Number of criteria in the level.")
     observation: Observation
     catalog: CatalogRef
-    summary_metadata: SummaryMetadata
-
-
-class BadgeProject(Model):
-    project_id: PositiveInt
-    name: str | None
 
 
 class BadgeObservation(Model):
@@ -336,24 +502,6 @@ class BadgeObservation(Model):
     service_attribution: str
     project_entry_attribution: None
     project_entry_license: None
-
-
-class BadgeProgress(Model):
-    field: Literal["tiered_percentage", "badge_percentage"]
-    value: float | int | None
-    level: Literal["baseline-1"] | None
-
-
-class GetProjectBadgeStatusResult(Result):
-    project: BadgeProject
-    family: BadgeFamily
-    badge_level: str | None
-    badge_state: Literal["earned", "in_progress", "unrecognized", "unknown"]
-    progress: BadgeProgress
-    updated_at: str | None
-    updated_at_status: Literal["valid", "missing", "invalid"]
-    observation: BadgeObservation
-    caveats: list[str]
 
 
 class SVGArtifact(Model):
@@ -434,11 +582,7 @@ class CriterionRef(Model):
     criterion_id: str
 
 
-class ProposalResult(Model):
-    schema_version: Annotated[Literal[2], BeforeValidator(_schema_version)]
-
-
-class ValidateDraftResult(ProposalResult):
+class ValidateDraftResult(ResultV2):
     project_id: PositiveInt
     section: Section
     draft_source: DraftSource
@@ -472,7 +616,7 @@ Outcome = Literal[
 ]
 
 
-class ArtifactResult(ProposalResult):
+class ArtifactResult(ResultV2):
     project_id: PositiveInt
     section: Section
     catalog: CatalogRef

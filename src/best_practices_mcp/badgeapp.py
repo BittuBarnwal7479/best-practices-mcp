@@ -10,13 +10,19 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urljoin, urlsplit, urlunsplit
 
-from best_practices_mcp.criteria import field_aliases, get_criteria
+from best_practices_mcp.criteria import (
+    catalog_reference,
+    criterion_definitions,
+    field_aliases,
+    level_summary,
+)
 from best_practices_mcp.documents import validate_document
+from best_practices_mcp.drafts import VALID_STATUSES
 from best_practices_mcp.errors import DomainError
 from best_practices_mcp.models import LEVELS
 
 if TYPE_CHECKING:
-    from best_practices_mcp.http import BadgeAppHTTP
+    from best_practices_mcp.http import BadgeAppHTTP, FetchResult
 
 ORIGIN = "https://www.bestpractices.dev"
 PROJECTS_PATH = "/projects.json"
@@ -35,7 +41,6 @@ PERCENTAGES = dict(
         strict=True,
     )
 )
-SUMMARY_FIELDS = ("badge_level", "tiered_percentage", "baseline_tiered_percentage")
 
 
 def _upstream(message: str, field: str | None = None) -> DomainError:
@@ -96,7 +101,7 @@ def _classify_query(query: str, page: int) -> tuple[str, str]:
     return query, "text"
 
 
-def _record(value: Any, expected_id: int | None = None) -> dict:
+def _record(value: Any, expected_id: int | None = None) -> dict[str, Any]:
     if type(value) is not dict:
         raise _upstream("A project response must contain a JSON object.")
     project_id = value.get("id")
@@ -112,21 +117,21 @@ def _record(value: Any, expected_id: int | None = None) -> dict:
     return value
 
 
-def _optional_text(record: dict, field: str) -> str | None:
+def _optional_text(record: dict[str, Any], field: str) -> str | None:
     value = record.get(field)
     if value is not None and type(value) is not str:
         raise _upstream("A public project text field has an unexpected type.", field)
     return value
 
 
-def _project(record: dict) -> dict:
+def _project(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "project_id": record["id"],
         **{field: _optional_text(record, field) for field in ("name", "repo_url", "homepage_url")},
     }
 
 
-def _match_basis(record: dict, query: str, kind: str) -> str:
+def _match_basis(record: dict[str, Any], query: str, kind: str) -> str:
     if kind != "url":
         return kind
     wanted = _comparable_url(query)
@@ -146,7 +151,7 @@ def _next_link(header: str) -> list[str]:
     return links
 
 
-def _next_page(url: str, source_url: str, params: dict) -> int | None:
+def _next_page(url: str, source_url: str, params: dict[str, Any]) -> int | None:
     try:
         resolved = urljoin(source_url, url)
         parts = urlsplit(resolved)
@@ -169,7 +174,7 @@ def _next_page(url: str, source_url: str, params: dict) -> int | None:
     return page if page > params["page"] else None
 
 
-def _pagination(result: Any, params: dict, empty: bool) -> tuple[int | None, bool]:
+def _pagination(result: Any, params: dict[str, Any], empty: bool) -> tuple[int | None, bool]:
     if empty:
         return None, True
     header = next((v for k, v in result.headers.items() if k.lower() == "link"), "")
@@ -179,9 +184,9 @@ def _pagination(result: Any, params: dict, empty: bool) -> tuple[int | None, boo
     return _next_page(links[0], result.source_url, params), False
 
 
-def _normalized_record(record: dict) -> dict:
+def _normalized_record(record: dict[str, Any]) -> dict[str, Any]:
     aliases = field_aliases()
-    normalized = {}
+    normalized: dict[str, Any] = {}
     for field, value in record.items():
         canonical = aliases.get(field, field)
         if canonical in normalized:
@@ -193,28 +198,43 @@ def _normalized_record(record: dict) -> dict:
     return normalized
 
 
-def _saved_answers(record: dict, definitions: list[dict]) -> tuple[dict, list[dict]]:
-    answers, criteria = {}, []
+def _matches(
+    record: dict[str, Any], definition: dict[str, Any], statuses: list[str] | None
+) -> bool:
+    """Apply a status filter; values outside the known set match only without one."""
+    if statuses is None:
+        return True
+    status = record.get(definition["status_field"])
+    return type(status) is str and status in VALID_STATUSES.intersection(statuses)
+
+
+def _saved_answers(
+    record: dict[str, Any],
+    definitions: list[dict[str, Any]],
+    statuses: list[str] | None,
+    justifications: bool,
+) -> tuple[dict[str, Any], list[str]]:
+    """Copy the supplied fields of matching criteria; missing fields stay missing.
+
+    BadgeApp stores a status for every criterion, "?" until one is chosen, so a status
+    missing from the record was not retrieved. It is reported, never read as an answer.
+    """
+    kinds = ("status", "justification") if justifications else ("status",)
+    answers, not_retrieved = {}, []
     for definition in definitions:
-        status_field = definition["status_field"]
-        justification_field = definition["justification_field"]
-        for field in (status_field, justification_field):
+        if definition["status_field"] not in record:
+            not_retrieved.append(definition["criterion_id"])
+        if not _matches(record, definition, statuses):
+            continue
+        for kind in kinds:
+            field = definition[f"{kind}_field"]
             if field in record:
                 answers[field] = copy.deepcopy(record[field])
-        criteria.append(
-            {
-                "criterion_id": definition["criterion_id"],
-                "status_present": status_field in record,
-                "status": record.get(status_field),
-                "justification_present": justification_field in record,
-                "justification": record.get(justification_field),
-            }
-        )
     _check_answer_bounds(answers)
-    return answers, criteria
+    return answers, not_retrieved
 
 
-def _check_answer_bounds(answers: dict) -> None:
+def _check_answer_bounds(answers: dict[str, Any]) -> None:
     try:
         validate_document(answers)
     except DomainError as exc:
@@ -222,23 +242,36 @@ def _check_answer_bounds(answers: dict) -> None:
             raise DomainError(
                 "response_too_large",
                 "Selected public answers exceed the document response budget.",
-                recovery="Request fewer criterion IDs for the selected level.",
+                recovery="Request fewer criterion IDs, or set include_justifications to false.",
             ) from exc
         raise _upstream("Public answers contain unsupported JSON values or nesting.") from exc
 
 
-def _summaries(record: dict) -> list[dict]:
-    summaries = []
+def _percentage(record: dict[str, Any], field: str) -> float | int | None:
+    value = record.get(field)
+    invalid_number = type(value) is float and not math.isfinite(value)
+    if value is not None and (type(value) not in (int, float) or invalid_number):
+        raise _upstream("A public progress percentage has an unexpected value.", field)
+    return value
+
+
+def _level_statuses(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """Copy each level's reported percentage and achievement times; compute nothing."""
+    statuses = []
     for level, field in PERCENTAGES.items():
-        value = record.get(field)
-        invalid_number = type(value) is float and not math.isfinite(value)
-        if value is not None and (type(value) not in (int, float) or invalid_number):
-            raise _upstream("A public progress percentage has an unexpected value.", field)
-        summaries.append({"level": level, "upstream_percentage": value})
-    return summaries
+        stem = level.replace("-", "_")
+        statuses.append(
+            {
+                "level": level,
+                "percentage": _percentage(record, field),
+                "achieved_at": _optional_text(record, f"achieved_{stem}_at"),
+                "lost_at": _optional_text(record, f"lost_{stem}_at"),
+            }
+        )
+    return statuses
 
 
-def _observation(result: Any, record: dict) -> dict:
+def _observation(result: Any, record: dict[str, Any]) -> dict[str, Any]:
     return {
         "project_id": record["id"],
         "source_url": result.source_url,
@@ -254,7 +287,7 @@ class BadgeAppClient:
     def __init__(self, http: BadgeAppHTTP) -> None:
         self.http = http
 
-    async def find_project(self, query: str, page: int = 1) -> dict:
+    async def find_project(self, query: str, page: int = 1) -> dict[str, Any]:
         query, kind = _classify_query(query, page)
         if kind == "id":
             return await self._find_id(query)
@@ -266,7 +299,7 @@ class BadgeAppClient:
         next_page, complete = _pagination(result, params, not records)
         return self._search_result(query, kind, page, records, result, next_page, complete)
 
-    async def _find_id(self, query: str) -> dict:
+    async def _find_id(self, query: str) -> dict[str, Any]:
         path = f"/projects/{query}.json"
         try:
             result = await self.http.get_json(path)
@@ -290,7 +323,15 @@ class BadgeAppClient:
         return self._search_result(query, "id", 1, [record], result, None, True)
 
     @staticmethod
-    def _search_result(query, kind, page, records, result, next_page, complete) -> dict:
+    def _search_result(
+        query: str,
+        kind: str,
+        page: int,
+        records: list[dict[str, Any]],
+        result: FetchResult,
+        next_page: int | None,
+        complete: bool,
+    ) -> dict[str, Any]:
         return {
             "schema_version": 1,
             "query": query,
@@ -305,7 +346,7 @@ class BadgeAppClient:
             "observation": {"source_url": result.source_url, "fetched_at": result.fetched_at},
         }
 
-    async def get_project_snapshot(self, project_id: int) -> tuple[dict, dict]:
+    async def get_project_snapshot(self, project_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
         """Read public project identity and observation metadata for artifact preparation."""
         _positive_integer(project_id, "project_id")
         result = await self.http.get_json(f"/projects/{project_id}.json")
@@ -313,24 +354,45 @@ class BadgeAppClient:
         observation = _observation(result, record)
         return record, observation
 
-    async def get_project_progress(
-        self, project_id: int, level: str | None = None, criterion_ids: list[str] | None = None
-    ) -> dict:
+    async def get_project_status(self, project_id: int) -> dict[str, Any]:
+        """Report the badge level and per-level progress that BadgeApp records."""
         _positive_integer(project_id, "project_id")
-        catalog = get_criteria(level, criterion_ids)
+        result = await self.http.get_json(f"/projects/{project_id}.json")
+        record = _record(result.data, project_id)
+        return {
+            "schema_version": 1,
+            "project": _project(record),
+            "badge_level": _optional_text(record, "badge_level"),
+            "levels": _level_statuses(record),
+            "updated_at": _optional_text(record, "updated_at"),
+            "observation": _observation(result, record),
+        }
+
+    async def get_project_answers(
+        self,
+        project_id: int,
+        level: str,
+        criterion_ids: list[str] | None = None,
+        statuses: list[str] | None = None,
+        include_justifications: bool = True,
+    ) -> dict[str, Any]:
+        """Return the answers saved for one level, optionally narrowed."""
+        _positive_integer(project_id, "project_id")
+        if level is None:
+            raise DomainError("invalid_level", "Saved answers are read one badge level at a time.")
+        definitions = criterion_definitions(level, criterion_ids)
         result = await self.http.get_json(f"/projects/{project_id}.json")
         record = _normalized_record(_record(result.data, project_id))
-        answers, criteria = _saved_answers(record, catalog["criteria"])
+        answers, not_retrieved = _saved_answers(
+            record, definitions, statuses, include_justifications
+        )
         return {
             "schema_version": 1,
             "project": _project(record),
             "level": level,
-            "summaries": _summaries(record),
             "answers": answers,
-            "criteria": criteria,
+            "statuses_not_retrieved": not_retrieved,
+            "level_criterion_count": level_summary(level)["criterion_count"],
             "observation": _observation(result, record),
-            "catalog": catalog["catalog"],
-            "summary_metadata": {
-                key: copy.deepcopy(record[key]) for key in SUMMARY_FIELDS if key in record
-            },
+            "catalog": catalog_reference(),
         }

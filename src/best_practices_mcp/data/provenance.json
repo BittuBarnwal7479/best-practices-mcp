@@ -1,4 +1,5 @@
 {
+  "category_policy": "Criteria major group, except Baseline levels, which use the OSPS category code table in docs/automation-proposals.md; criteria_metadata keeps each upstream major group.",
   "counts": {
     "baseline-1": 24,
     "baseline-2": 19,
@@ -1681,6 +1682,7 @@
       "obsolete": false
     }
   },
+  "excluded_criteria": {},
   "files": {
     "LICENSE": "d579030dcd292b0925056544b00fe6e6895dcd68c1b8ae1d38014e376ef631d9",
     "config/locales/en.yml": "2dec2815dafb6444e2213ea224dab22633164f618c6297c3d511bcd6c4a8b5e8",
@@ -1697,9 +1699,10 @@
   "generator": {
     "format_version": 2,
     "path": "scripts/generate_catalog.py",
-    "sha256": "47fb2904ac0683a0e741fd38b88fd091630c3651a03f910f0953246527830e16"
+    "sha256": "14be0fad5bce7fe1d0bfb7ac701c8244282b92e7a2c4a3a173b43554034a9bf0"
   },
   "license_file": "BADGEAPP-LICENSE.txt",
+  "lifecycle_policy": "Criteria that upstream marks obsolete or future are left out of the catalog and named in excluded_criteria.",
   "repository": "https://github.com/ossf/best-practices-badge",
   "revision": "31325acd7963e0c9203da0ff798802a766237517",
   "text_policy": "English locale descriptions; upstream rank-bounded details inheritance"

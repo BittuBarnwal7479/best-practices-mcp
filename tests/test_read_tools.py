@@ -29,12 +29,20 @@ def test_read_workflow_wire_results_and_catalog_schemas(tmp_path: Path) -> None:
                 assert tool.input_schema == input_schema(tool.name)
                 assert tool.output_schema == output_schema(tool.name)
                 assert tool.annotations.read_only_hint is (tool.name != "update_draft")
+                assert tool.title and tool.description
+                for argument, schema in tool.input_schema["properties"].items():
+                    assert schema.get("description"), (tool.name, argument)
+            # The draft format is discoverable from the listing alone.
+            listing = json.dumps([tool.input_schema for tool in listed])
+            assert all(word in listing for word in ('\\"Unmet\\"', "implementation_languages"))
+            # Before the rate-limited search below starts a shared cooldown.
+            await assert_filtered_reads(client)
             calls = [
                 ("get_criteria", {}),
                 ("find_project", {"query": "ambiguous"}),
-                ("get_project_progress", {"project_id": 123, "level": "passing"}),
+                ("get_project_answers", {"project_id": 123, "level": "passing"}),
                 ("get_criteria", {"level": "passing", "criterion_ids": ["unknown"]}),
-                ("get_project_progress", {"project_id": 999}),
+                ("get_project_status", {"project_id": 999}),
                 ("find_project", {"query": "rate-limited"}),
             ]
             results = []
@@ -54,13 +62,107 @@ def test_read_workflow_wire_results_and_catalog_schemas(tmp_path: Path) -> None:
                 "rate_limited",
             ]
             assert all(r.is_error for r in results[3:])
-            bad = await client.call_tool("get_project_progress", {"project_id": True})
-            assert bad.is_error
-            assert "input_value" not in bad.content[0].text
+            await assert_argument_errors(client)
             assert [t.name for t in (await client.list_tools()).tools] == sorted(IMPLEMENTED_TOOLS)
 
     asyncio.run(exercise())
     assert not list(tmp_path.iterdir())
+
+
+async def call(client, name: str, arguments: dict) -> dict:
+    result = await client.call_tool(name, arguments)
+    Draft202012Validator(output_schema(name)).validate(result.structured_content)
+    assert json.loads(result.content[0].text) == result.structured_content
+    assert result.is_error == ("error" in result.structured_content)
+    return result.structured_content
+
+
+async def assert_filtered_reads(client) -> None:
+    index = await call(client, "get_criteria", {"level": "passing", "category": "Basics"})
+    assert index["schema_version"] == 2 and index["detail"] == "index"
+    assert {"criterion_id": "description_good", "category": "Basics", "requirement": "MUST"} in (
+        index["criteria"]
+    )
+    full = await call(client, "get_criteria", {"level": "passing", "criterion_ids": ["interact"]})
+    assert full["detail"] == "full" and full["criteria"][0]["status_field"] == "interact_status"
+    unknown = await call(client, "get_criteria", {"level": "passing", "category": "basics"})
+    assert unknown["error"]["code"] == "invalid_category"
+    assert "Basics" in unknown["error"]["details"]["allowed"]
+    # A numeric string and null optional arguments are accepted at the tool boundary.
+    status = await call(client, "get_project_status", {"project_id": 123})
+    assert status["badge_level"] == "passing"
+    assert status["updated_at"] == "2026-11-13T12:34:56.000Z"
+    assert status["levels"][0] == {
+        "level": "passing",
+        "percentage": 100,
+        "achieved_at": "2026-10-01T09:00:00.000Z",
+        "lost_at": None,
+    }
+    assert [entry["percentage"] for entry in status["levels"][1:]] == [12, None, None, None, None]
+    assert "answers" not in status
+    saved = await call(
+        client,
+        "get_project_answers",
+        {
+            "project_id": "123",
+            "level": "passing",
+            "criterion_ids": None,
+            "statuses": ["Met"],
+            "include_justifications": False,
+        },
+    )
+    assert saved["schema_version"] == 1
+    assert saved["answers"] == {"description_good_status": "Met"}
+    assert saved["level_criterion_count"] == 67
+    # The synthetic record omits most statuses, which BadgeApp itself never does.
+    assert len(saved["statuses_not_retrieved"]) == 66
+    rejected = await call(
+        client,
+        "get_project_answers",
+        {"project_id": 123, "level": "passing", "statuses": ["absent"]},
+    )
+    assert rejected["error"]["details"]["issues"][0]["allowed"] == ["Met", "Unmet", "N/A", "?"]
+    unscoped = await call(client, "get_project_answers", {"project_id": 123})
+    assert unscoped["error"]["details"]["issues"] == [{"field": "level", "problem": "is required"}]
+
+
+async def assert_argument_errors(client) -> None:
+    rejected = await call(
+        client,
+        "get_project_answers",
+        {"project_id": True, "level": "bronze", "statuses": ["Met"], "format": "short"},
+    )
+    assert rejected == {
+        "schema_version": 1,
+        "error": {
+            "code": "invalid_arguments",
+            "message": "Invalid arguments for get_project_answers.",
+            "details": {
+                "issues": [
+                    {"field": "format", "problem": "is not an argument of this tool"},
+                    {
+                        "field": "level",
+                        "problem": "is not an allowed value",
+                        "allowed": [
+                            "passing",
+                            "silver",
+                            "gold",
+                            "baseline-1",
+                            "baseline-2",
+                            "baseline-3",
+                        ],
+                    },
+                    {"field": "project_id", "problem": "must be an integer"},
+                ]
+            },
+            "recovery": "Correct the listed arguments and call again.",
+            "retry_after_seconds": None,
+        },
+    }
+    dependent = await call(client, "get_criteria", {"criterion_ids": ["interact"]})
+    assert dependent["error"]["details"]["issues"] == [
+        {"field": "criterion_ids", "problem": "requires level"}
+    ]
 
 
 def test_offline_catalog_and_invalid_inputs_need_no_network(tmp_path: Path) -> None:
@@ -97,5 +199,8 @@ def test_offline_catalog_and_invalid_inputs_need_no_network(tmp_path: Path) -> N
             assert result.structured_content["criteria"]
             invalid = await client.call_tool("find_project", {"query": None})
             assert invalid.is_error
+            assert invalid.structured_content["error"]["details"]["issues"] == [
+                {"field": "query", "problem": "is required"}
+            ]
 
     asyncio.run(exercise())

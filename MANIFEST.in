@@ -1,7 +1,6 @@
 include CONTRIBUTING.md
 include Makefile .python-version uv.lock
 include osv-scanner.toml
-include .github/workflows/actionlint.yml
 include .pre-commit-config.yaml
 include .gitattributes
 include .github/release-please-config.json .github/.release-please-manifest.json
@@ -10,4 +9,4 @@ recursive-include scripts *.py
 recursive-include tests *.py *.json *.txt
 recursive-include vendor/badgeapp *
 recursive-include src/best_practices_mcp/data *.json *.txt
-prune docs/live-qa
+prune docs/testing/live-qa

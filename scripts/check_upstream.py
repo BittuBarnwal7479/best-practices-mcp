@@ -11,6 +11,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -40,7 +41,9 @@ class GitHub:
     def __init__(self, token: str = "") -> None:
         self.token = token
 
-    def request(self, url: str, *, data: dict | None = None, method: str = "GET") -> bytes:
+    def request(
+        self, url: str, *, data: dict[str, Any] | None = None, method: str = "GET"
+    ) -> bytes:
         headers = {"User-Agent": "best-practices-mcp-upstream-check"}
         if url.startswith("https://api.github.com/"):
             headers.update(
@@ -63,12 +66,12 @@ class GitHub:
                     "GitHub API rate limit exhausted; retry after reset "
                     + response.headers.get("X-RateLimit-Reset", "(see GitHub)")
                 )
-            content = response.read(5_000_001)
+            content: bytes = response.read(5_000_001)
         if len(content) > 5_000_000:
             raise ValueError("Upstream response exceeded 5 MB")
         return content
 
-    def api(self, path: str, *, data: dict | None = None, method: str = "GET"):
+    def api(self, path: str, *, data: dict[str, Any] | None = None, method: str = "GET") -> Any:
         content = self.request(f"https://api.github.com{path}", data=data, method=method)
         return json.loads(content) if content else None
 
@@ -143,8 +146,8 @@ def report_body(report: Report) -> str:
         return "\n".join(lines) + "\n"
     lines.extend(
         [
-            "Review the source and generated changes together. Labels are advisory; all updates "
-            "require maintainer review and passing CI. No runtime code is changed automatically.",
+            "Review the source and generated changes together. All updates require maintainer "
+            "review and passing CI. No runtime code is changed automatically.",
             "",
             "| Changed file | Bundled source | Production source |",
             "| --- | --- | --- |",
@@ -162,8 +165,8 @@ def report_body(report: Report) -> str:
         [
             "",
             "Follow [the review and update procedure](https://github.com/"
-            "reponomics/best-practices-mcp/blob/main/docs/"
-            "upstream-compatibility.md#checking-for-upstream-changes).",
+            "reponomics/best-practices-mcp/blob/main/docs/maintenance/"
+            "upstream-updates.md#reviewing-an-update).",
         ]
     )
     return "\n".join(lines) + "\n"

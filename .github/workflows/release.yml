@@ -103,11 +103,6 @@ jobs:
         with:
           version-file: pyproject.toml
           enable-cache: false
-      - name: Set up the inventoried Go toolchain
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.27.4'
-          cache: false
       - name: Install locked development and isolated SBOM tools
         run: make setup release-evidence-setup
       - name: Validate tag, version, manifest and main ancestry
@@ -118,16 +113,12 @@ jobs:
         run: make validate
       - name: Build and qualify the exact upload candidates with runtime SBOMs
         run: make release-build release-qualify RELEASE_SBOM=1
-      - name: Inventory the pinned workflow linter
-        run: make actionlint-inventory
       - name: Scan candidate and tooling dependencies for vulnerabilities
         uses: google/osv-scanner-action/osv-scanner-action@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
         with:
           scan-args: |-
             --config=osv-scanner.toml
             --lockfile=uv.lock
-            --lockfile=osv-scanner:build/actionlint-inventory/inventory.json
-            --lockfile=osv-scanner:build/actionlint-inventory/stdlib-inventory.json
             --lockfile=osv-scanner:build/release/reports/runtime-wheel.inventory.json
             --lockfile=osv-scanner:build/release/reports/runtime-sdist.inventory.json
             --no-resolve
@@ -140,11 +131,10 @@ jobs:
           scan-args: |-
             --config=osv-scanner.toml
             --lockfile=uv.lock
-            --lockfile=osv-scanner:build/actionlint-inventory/inventory.json
             --lockfile=osv-scanner:build/release/reports/runtime-wheel.inventory.json
             --lockfile=osv-scanner:build/release/reports/runtime-sdist.inventory.json
             --no-resolve
-            --licenses=MIT,MIT-0,0BSD,BSD-2-Clause,BSD-3-Clause,Apache-2.0,ISC,PSF-2.0,MPL-2.0,BlueOak-1.0.0,Unlicense
+            --licenses=MIT,MIT-0,0BSD,BSD-2-Clause,BSD-3-Clause,Apache-2.0,ISC,PSF-2.0,MPL-2.0,Unlicense
             --all-packages
             --format=json
             --output-file=build/release/reports/osv-licenses.json
@@ -155,7 +145,6 @@ jobs:
           scan-args: |-
             --config=osv-scanner.toml
             --lockfile=uv.lock
-            --lockfile=osv-scanner:build/actionlint-inventory/inventory.json
             --no-resolve
             --all-packages
             --format=cyclonedx-1-6
@@ -181,7 +170,6 @@ jobs:
             build/release/evidence.json
             build/release/evidence.log
             build/release/reports/
-            build/actionlint-inventory/
           if-no-files-found: warn
           retention-days: 30
 
@@ -269,11 +257,14 @@ jobs:
           with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as output:
               output.write('wheel=' + wheel.as_posix() + '\nsdist=' + sdist.as_posix() + '\n')
           PY
-      - name: Attest build provenance for both distributions
+      - name: Attest build provenance for distributions and release manifests
         id: provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: bundle/dist/*
+          subject-path: |
+            bundle/dist/*
+            bundle/release.json
+            bundle/SHA256SUMS
       - name: Attest the wheel reference-installation SBOM
         id: wheel-sbom
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -343,6 +334,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          for manifest in bundle/release.json bundle/SHA256SUMS; do
+            gh attestation verify "$manifest" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --cert-oidc-issuer https://token.actions.githubusercontent.com \
+              --source-ref "refs/tags/$RELEASE_TAG" --source-digest "$GITHUB_SHA" --deny-self-hosted-runners \
+              --bundle attestations/provenance.sigstore.json
+          done
           for artifact in bundle/dist/*; do
             gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \

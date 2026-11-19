@@ -4,11 +4,13 @@ import argparse
 import asyncio
 import json
 import sys
+from typing import Any
 
 from mcp import Client, StdioServerParameters
+from mcp.types import CallToolResult
 
 
-def require_success(result) -> dict:
+def require_success(result: CallToolResult) -> dict[str, Any]:
     data = result.structured_content
     if result.is_error:
         code = (
@@ -22,7 +24,7 @@ def require_success(result) -> dict:
     return data
 
 
-async def check(project_id: int) -> dict:
+async def check(project_id: int) -> dict[str, Any]:
     parameters = StdioServerParameters(command=sys.executable, args=["-m", "best_practices_mcp"])
     failure = None
     async with asyncio.timeout(80), Client(parameters, read_timeout_seconds=40) as client:
@@ -34,7 +36,7 @@ async def check(project_id: int) -> dict:
             if not found["candidates"]:
                 raise RuntimeError("Project lookup returned no registered entry.")
             data = require_success(
-                await client.call_tool("get_project_progress", {"project_id": project_id})
+                await client.call_tool("get_project_status", {"project_id": project_id})
             )
         except RuntimeError as error:
             failure = error
@@ -44,7 +46,7 @@ async def check(project_id: int) -> dict:
         "result": "passed",
         "project_id": data["project"]["project_id"],
         "observation": data["observation"],
-        "available_summaries": len(data["summaries"]),
+        "levels_reported": len(data["levels"]),
         "note": "Public GET observation only; no deployed-source revision or save claim.",
     }
 

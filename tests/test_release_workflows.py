@@ -3,7 +3,12 @@
 import ast
 import hashlib
 import json
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -31,7 +36,7 @@ def verification_namespace():
         for item in module.body
         if isinstance(item, ast.Import | ast.ImportFrom | ast.FunctionDef)
     ]
-    namespace = {}
+    namespace: dict[str, Any] = {}
     exec(compile(module, "release-candidate-verifier", "exec"), namespace)
     return namespace
 
@@ -127,6 +132,147 @@ def test_checksum_manifest_is_checked(candidate):
         verification_namespace()["verify"](candidate)
 
 
+@pytest.fixture
+def signed_manifests(candidate, monkeypatch):
+    if os.name == "nt":
+        pytest.skip("These release workflow shell steps run on Ubuntu, not Windows")
+    if not shutil.which("bash") or not shutil.which("sha256sum"):
+        pytest.skip("Release verification runs on Ubuntu and requires bash and sha256sum")
+    root = candidate.parent
+    assets = root / "release-verification/assets"
+    assets.mkdir(parents=True)
+    for path in candidate.rglob("*"):
+        if path.is_file():
+            shutil.copyfile(path, assets / path.name)
+    commands = root / "commands.jsonl"
+    executable = root / "bin/gh"
+    executable.parent.mkdir()
+    # The stdlib-only CLI stub does not need site hooks or MCP coverage instrumentation.
+    executable.write_text('#!/bin/sh\nexec "$GH_TEST_PYTHON" -S "$GH_TEST_SCRIPT" "$@"\n')
+    script = executable.with_suffix(".py")
+    script.write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        "with open(os.environ['GH_TEST_LOG'], 'a') as output:\n"
+        "    output.write(json.dumps(args) + '\\n')\n"
+        "if Path(args[2]).name == os.environ.get('GH_TEST_REJECT'):\n"
+        "    sys.exit(23)\n"
+    )
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(executable.parent) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("GH_TEST_PYTHON", sys.executable)
+    monkeypatch.setenv("GH_TEST_SCRIPT", str(script))
+    monkeypatch.setenv("GH_TEST_LOG", str(commands))
+    monkeypatch.delenv("GH_TEST_REJECT", raising=False)
+    monkeypatch.setenv("RUNNER_TEMP", str(root))
+    monkeypatch.setenv("GITHUB_REPOSITORY", "reponomics/best-practices-mcp")
+    monkeypatch.setenv("REPOSITORY", "reponomics/best-practices-mcp")
+    monkeypatch.setenv("EXPECTED_SHA", "a" * 40)
+    return root, assets, commands
+
+
+def manifest_verification_source(stage):
+    if stage == "before-publication":
+        return step("github-release", "Verify signatures before release attachment")["run"]
+    workflow = yaml.safe_load((ROOT / ".github/workflows/verify-release.yml").read_text())
+    return next(
+        item["run"]
+        for item in workflow["jobs"]["verify"]["steps"]
+        if item["name"] == "1b. Verify the signed release manifests"
+    )
+
+
+def run_manifest_verification(stage, root):
+    return subprocess.run(
+        [
+            "bash",
+            "--noprofile",
+            "--norc",
+            "-e",
+            "-o",
+            "pipefail",
+            "-c",
+            manifest_verification_source(stage),
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+@pytest.mark.parametrize("stage", ["before-publication", "after-publication"])
+def test_manifest_signatures_require_expected_release_identity(signed_manifests, stage):
+    root, _, commands = signed_manifests
+    result = run_manifest_verification(stage, root)
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = [json.loads(line) for line in commands.read_text().splitlines()]
+    manifests = [call for call in calls if Path(call[2]).name in {"release.json", "SHA256SUMS"}]
+    assert {Path(call[2]).name for call in manifests} == {"release.json", "SHA256SUMS"}
+    expected = {
+        "--repo": "reponomics/best-practices-mcp",
+        "--signer-workflow": "reponomics/best-practices-mcp/.github/workflows/release.yml",
+        "--cert-oidc-issuer": "https://token.actions.githubusercontent.com",
+        "--source-ref": "refs/tags/v0.2.0-beta.1",
+        "--source-digest": "a" * 40,
+    }
+    for call in manifests:
+        assert call[:2] == ["attestation", "verify"]
+        assert "--deny-self-hosted-runners" in call
+        assert Path(call[call.index("--bundle") + 1]).name == "provenance.sigstore.json"
+        for flag, value in expected.items():
+            assert call[call.index(flag) + 1] == value
+
+
+@pytest.mark.parametrize("stage", ["before-publication", "after-publication"])
+def test_manifest_verification_supports_python_path_with_spaces(
+    signed_manifests, monkeypatch, stage
+):
+    root, _, _ = signed_manifests
+    interpreter = root / "python tools/python"
+    interpreter.parent.mkdir()
+    interpreter.symlink_to(sys.executable)
+    monkeypatch.setenv("GH_TEST_PYTHON", str(interpreter))
+    result = run_manifest_verification(stage, root)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("stage", ["before-publication", "after-publication"])
+@pytest.mark.parametrize("manifest", ["release.json", "SHA256SUMS"])
+def test_manifest_signature_failure_stops_verification(
+    signed_manifests, monkeypatch, stage, manifest
+):
+    root, _, commands = signed_manifests
+    monkeypatch.setenv("GH_TEST_REJECT", manifest)
+    result = run_manifest_verification(stage, root)
+    assert result.returncode == 23
+    calls = [json.loads(line) for line in commands.read_text().splitlines()]
+    assert Path(calls[-1][2]).name == manifest
+
+
+def test_signed_manifest_verification_rejects_changed_release_file(signed_manifests):
+    root, assets, _ = signed_manifests
+    (assets / "runtime-wheel.cdx.json").write_bytes(b"changed report")
+    result = run_manifest_verification("after-publication", root)
+    assert result.returncode != 0
+    assert "runtime-wheel.cdx.json: FAILED" in result.stdout
+
+
+def test_provenance_covers_distributions_and_both_manifests(candidate):
+    subjects = next(item for item in JOBS["publish"]["steps"] if item.get("id") == "provenance")
+    selected = {
+        path.relative_to(candidate).as_posix()
+        for pattern in subjects["with"]["subject-path"].splitlines()
+        for path in candidate.parent.glob(pattern)
+    }
+    assert selected == {
+        *[path.relative_to(candidate).as_posix() for path in (candidate / "dist").iterdir()],
+        "release.json",
+        "SHA256SUMS",
+    }
+
+
 def run_draft_preflight(monkeypatch, tmp_path, *, listed=None, expected_id=None, **changes):
     import subprocess
 
@@ -218,8 +364,6 @@ def test_scan_failure_blocks_bundle_and_pypi_gets_only_archives():
     assert publish["with"]["attestations"] is True
     vulnerability = step("build", "Scan candidate and tooling dependencies for vulnerabilities")
     licenses = step("build", "Check candidate and tooling licenses")
-    assert "stdlib-inventory.json" in vulnerability["with"]["scan-args"]
-    assert "stdlib-inventory.json" not in licenses["with"]["scan-args"]
     for kind in ("wheel", "sdist"):
         assert f"runtime-{kind}.inventory.json" in vulnerability["with"]["scan-args"]
         assert f"runtime-{kind}.inventory.json" in licenses["with"]["scan-args"]
@@ -247,7 +391,7 @@ def test_final_publisher_checks_uploaded_assets_before_sealing(candidate, monkey
     signatures.mkdir()
     for name in ("provenance", "runtime-wheel", "runtime-sdist"):
         (signatures / f"{name}.sigstore.json").write_text("signature")
-    state = {"assets": [], "uploaded": False, "published": False}
+    state: dict[str, Any] = {"assets": [], "uploaded": False, "published": False}
 
     def query(command, **kwargs):
         if command[1:3] == ["release", "upload"]:

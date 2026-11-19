@@ -1,23 +1,24 @@
 """Shared section selection and observed proposal compatibility advisories."""
 
-from best_practices_mcp.criteria import get_criteria
+from collections.abc import Iterable
+from typing import Any
+
+from best_practices_mcp.criteria import catalog_levels, catalog_reference, criterion_definitions
 from best_practices_mcp.errors import DomainError
 
 
-def section_catalog(section: str) -> dict:
+def section_catalog(section: str) -> dict[str, Any]:
     """Keep level-qualified definitions when section selection is deferred."""
     if section is None:
         raise DomainError("invalid_level", "Select a badge level or choose_section.")
-    if section != "choose_section":
-        return get_criteria(section)
-    catalog = get_criteria()
-    catalog["criteria"] = [
-        criterion for level in catalog["levels"] for criterion in get_criteria(level)["criteria"]
-    ]
-    return catalog
+    levels = catalog_levels() if section == "choose_section" else [section]
+    return {
+        "criteria": [criterion for level in levels for criterion in criterion_definitions(level)],
+        "catalog": catalog_reference(),
+    }
 
 
-def unknown_status_warnings(draft: dict, fields) -> list[dict]:
+def unknown_status_warnings(draft: dict[str, Any], fields: Iterable[str]) -> list[dict[str, Any]]:
     affected = sorted(
         field for field in fields if field.endswith("_status") and draft.get(field) == "?"
     )

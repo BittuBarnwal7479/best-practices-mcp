@@ -7,16 +7,18 @@ import platform
 import sys
 import sysconfig
 from pathlib import Path
+from typing import Any
 
 from mcp import Client, StdioServerParameters
+from mcp.types import TextContent
 
 TOOLS = [
     "build_draft",
     "find_project",
     "get_criteria",
-    "get_project_badge_status",
+    "get_project_answers",
     "get_project_badge_svg",
-    "get_project_progress",
+    "get_project_status",
     "prepare_update_url",
     "read_draft",
     "update_draft",
@@ -29,10 +31,14 @@ def executable() -> Path:
     return Path(sysconfig.get_path("scripts")) / f"bestpractices-mcp{suffix}"
 
 
-async def call(client, name: str, arguments: dict, error: str | None = None) -> dict:
+async def call(
+    client: Client, name: str, arguments: dict[str, Any], error: str | None = None
+) -> dict[str, Any]:
     result = await client.call_tool(name, arguments)
-    payload = result.structured_content
-    assert json.loads(result.content[0].text) == payload
+    payload: dict[str, Any] = result.structured_content
+    text = result.content[0]
+    assert isinstance(text, TextContent)
+    assert json.loads(text.text) == payload
     assert result.is_error == (error is not None)
     if error:
         assert payload["error"]["code"] == error
@@ -45,11 +51,12 @@ async def catalog_and_storage(params: StdioServerParameters) -> None:
         assert [tool.name for tool in listing] == TOOLS
         assert client.protocol_version == "2026-07-28"
         mutation = next(tool for tool in listing if tool.name == "update_draft")
+        assert mutation.annotations is not None
         assert mutation.annotations.read_only_hint is False
         index = await call(client, "get_criteria", {})
         assert len(index["levels"]) == 6
-        for level in index["levels"]:
-            assert (await call(client, "get_criteria", {"level": level}))["criteria"]
+        for entry in index["levels"]:
+            assert (await call(client, "get_criteria", {"level": entry["level"]}))["criteria"]
         await call(client, "read_draft", {"project_id": 123}, "draft_not_found")
         draft = {"name": "Fresh install ✨", "description_good_justification": "Synthetic text"}
         created = await call(client, "update_draft", {"project_id": 123, "changes": draft})
@@ -64,7 +71,7 @@ async def catalog_and_storage(params: StdioServerParameters) -> None:
         assert (await call(client, "read_draft", {"project_id": 123}))["draft"] == draft
 
 
-async def synthetic_public_workflow(workspace: Path, env: dict) -> None:
+async def synthetic_public_workflow(workspace: Path, env: dict[str, Any]) -> None:
     params = StdioServerParameters(
         command=sys.executable,
         args=["-I", str(workspace / "read_server.py")],
@@ -74,8 +81,8 @@ async def synthetic_public_workflow(workspace: Path, env: dict) -> None:
     async with Client(params) as client:
         found = await call(client, "find_project", {"query": "123"})
         assert found["candidates"][0]["project"]["project_id"] == 123
-        progress = await call(client, "get_project_progress", {"project_id": 123})
-        assert progress["project"]["project_id"] == 123
+        status = await call(client, "get_project_status", {"project_id": 123})
+        assert status["project"]["project_id"] == 123
         result = await call(client, "prepare_update_url", {"project_id": 123, "section": "passing"})
         assert result["draft_source"]["kind"] == "stored" and result["artifact"]
         explicit = await call(

@@ -9,7 +9,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
+from collections.abc import Hashable
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -23,15 +26,24 @@ FLAGS = (
     "met_justification_required",
     "met_url_required",
 )
+# Upstream's lifecycle flags: a retired criterion, or one not yet in effect. Neither is
+# part of a badge application, so neither enters the catalog.
+EXCLUDING_FLAGS = ("obsolete", "future")
 INPUTS = ("criteria/criteria.yml", "criteria/baseline_criteria.yml", "config/locales/en.yml")
+# Baseline YAML files every control under one group; upstream documents the category
+# of a control as the two-letter code in its identifier.
+CATEGORY_GUIDE = "docs/automation-proposals.md"
+CATEGORY_HEADING = "**OSPS category codes:**"
+CATEGORY_ROW = re.compile(r"^\| `([a-z]{2})` \| (.+?) \|$", re.MULTILINE)
+BASELINE_ID = re.compile(r"osps_([a-z]{2})_[0-9]{2}_[0-9]{2}")
 
 
 class SourceLoader(yaml.SafeLoader):
     """Safe loader supporting upstream's ordered maps without losing keys."""
 
 
-def ordered_mapping(loader: SourceLoader, node: yaml.SequenceNode) -> dict:
-    result = {}
+def ordered_mapping(loader: SourceLoader, node: yaml.SequenceNode) -> dict[Hashable, Any]:
+    result: dict[Hashable, Any] = {}
     for child in node.value:
         item = loader.construct_mapping(child, deep=True)
         if len(item) != 1 or result.keys() & item.keys():
@@ -47,7 +59,7 @@ def encoded(value: object) -> bytes:
     return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
 
 
-def read_sources(source_dir: Path) -> tuple[dict, dict, dict]:
+def read_sources(source_dir: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     manifest = json.loads((source_dir / "source.json").read_text(encoding="utf-8"))
     for name, expected in manifest["files"].items():
         actual = hashlib.sha256((source_dir / name).read_bytes()).hexdigest()
@@ -61,7 +73,27 @@ def read_sources(source_dir: Path) -> tuple[dict, dict, dict]:
     return manifest, merged, english["en"]["criteria"]
 
 
-def flatten(groups: dict) -> dict[str, dict]:
+def baseline_categories(source_dir: Path) -> dict[str, str]:
+    """Read the documented category name for each OSPS identifier code."""
+    guide = (source_dir / CATEGORY_GUIDE).read_text(encoding="utf-8")
+    table = guide.partition(CATEGORY_HEADING)[2].strip().split("\n\n")[0]
+    categories = dict(CATEGORY_ROW.findall(table))
+    if not categories:
+        raise ValueError(f"Missing OSPS category codes: {CATEGORY_GUIDE}")
+    return categories
+
+
+def category(level: str, criterion_id: str, raw: dict[str, Any], baseline: dict[str, str]) -> str:
+    if not level.startswith("baseline-"):
+        major: str = raw["major"]
+        return major
+    match = BASELINE_ID.fullmatch(criterion_id)
+    if match is None or match[1] not in baseline:
+        raise ValueError(f"No documented category code: {level}/{criterion_id}")
+    return baseline[match[1]]
+
+
+def flatten(groups: dict[str, Any]) -> dict[str, dict[str, Any]]:
     result = {}
     for major, minors in groups.items():
         for minor, criteria in minors.items():
@@ -72,7 +104,9 @@ def flatten(groups: dict) -> dict[str, dict]:
     return result
 
 
-def inherited_details(level: str, criterion_id: str, definitions: dict, english: dict) -> tuple:
+def inherited_details(
+    level: str, criterion_id: str, definitions: dict[str, Any], english: dict[str, Any]
+) -> tuple[str | None, str | None]:
     # Mirrors Criteria#get_text_if_exists: reverse defined-level order, with rank bound.
     for candidate in reversed(definitions):
         if RANKS[candidate] > RANKS[level] or criterion_id not in definitions[candidate]:
@@ -83,7 +117,18 @@ def inherited_details(level: str, criterion_id: str, definitions: dict, english:
     return None, None
 
 
-def boolean_flags(raw: dict) -> dict[str, bool]:
+def exclusion(raw: dict[str, Any]) -> str | None:
+    """Name the upstream lifecycle flag that keeps a criterion out of the catalog."""
+    for flag in EXCLUDING_FLAGS:
+        value = raw.get(flag, False)
+        if type(value) is not bool:
+            raise ValueError(f"Non-boolean criterion flag: {flag}")
+        if value:
+            return flag
+    return None
+
+
+def boolean_flags(raw: dict[str, Any]) -> dict[str, bool]:
     """Expand upstream's omitted entailed flags into explicit requirements."""
     result = {}
     for flag in FLAGS:
@@ -97,8 +142,13 @@ def boolean_flags(raw: dict) -> dict[str, bool]:
 
 
 def criterion_record(
-    level: str, criterion_id: str, raw: dict, definitions: dict, english: dict
-) -> tuple[dict, dict]:
+    level: str,
+    criterion_id: str,
+    raw: dict[str, Any],
+    definitions: dict[str, Any],
+    english: dict[str, Any],
+    baseline: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     text = english[level][criterion_id]
     details, inherited_level = inherited_details(level, criterion_id, definitions, english)
     description = text["description"]
@@ -111,7 +161,7 @@ def criterion_record(
         "level": SOURCE_LEVELS[level],
         "description": description,
         "details": details,
-        "category": raw["major"],
+        "category": category(level, criterion_id, raw, baseline),
         "requirement": raw["category"],
         "status_field": f"{criterion_id}_status",
         "justification_field": f"{criterion_id}_justification",
@@ -136,12 +186,17 @@ def catalog_content(source_dir: Path) -> dict[str, bytes]:
     if set(groups) != set(SOURCE_LEVELS):
         raise ValueError("Source levels differ from the six supported levels")
     definitions = {level: flatten(group) for level, group in groups.items()}
+    baseline = baseline_categories(source_dir)
     criteria = []
     metadata = {}
+    excluded = {}
     for level, definitions_at_level in definitions.items():
         for criterion_id, raw in sorted(definitions_at_level.items()):
+            if reason := exclusion(raw):
+                excluded[f"{SOURCE_LEVELS[level]}/{criterion_id}"] = reason
+                continue
             record, criterion_metadata = criterion_record(
-                level, criterion_id, raw, definitions, english
+                level, criterion_id, raw, definitions, english, baseline
             )
             criteria.append(record)
             metadata[f"{SOURCE_LEVELS[level]}/{criterion_id}"] = criterion_metadata
@@ -153,12 +208,21 @@ def catalog_content(source_dir: Path) -> dict[str, bytes]:
             "format_version": 2,
         },
         "criteria_metadata": metadata,
+        "excluded_criteria": excluded,
         "counts": {level: sum(c["level"] == level for c in criteria) for level in LEVELS},
         "license_file": "BADGEAPP-LICENSE.txt",
         "text_policy": "English locale descriptions; upstream rank-bounded details inheritance",
+        "category_policy": (
+            "Criteria major group, except Baseline levels, which use the OSPS category code "
+            f"table in {CATEGORY_GUIDE}; criteria_metadata keeps each upstream major group."
+        ),
         "flag_policy": (
             "Explicit requirements include upstream entailments: met_url_required implies "
             "met_justification_required; na_justification_required implies na_allowed."
+        ),
+        "lifecycle_policy": (
+            "Criteria that upstream marks obsolete or future are left out of the catalog and "
+            "named in excluded_criteria."
         ),
         "generated_at_policy": "Source-manifest generation timestamp preserved on regeneration",
     }

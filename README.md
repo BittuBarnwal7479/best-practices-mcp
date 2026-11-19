@@ -37,16 +37,16 @@ Reload the host's MCP connections, then try a request such as:
 
 > Find the BadgeApp project for [https://github.com/reponomics/PolicyChecks](https://github.com/reponomics/PolicyChecks) and show its silver-level progress. Do not prepare any changes yet.
 
-Starting the executable directly in a terminal waits for MCP messages; it is not an interactive CLI. See [Contributing](https://github.com/reponomics/best-practices-mcp/blob/main/CONTRIBUTING.md) for development setup or the [Inspector guide](https://github.com/reponomics/best-practices-mcp/blob/main/docs/inspector-qa.md) for interactive debugging.
+Starting the executable directly in a terminal waits for MCP messages; it is not an interactive CLI. See [Contributing](https://github.com/reponomics/best-practices-mcp/blob/main/CONTRIBUTING.md) for development setup or the [Inspector guide](https://github.com/reponomics/best-practices-mcp/blob/main/docs/testing/inspector-qa.md) for interactive debugging.
 
 ## Tools
 
 | Tool | What it does | Network or storage effects |
 | --- | --- | --- |
 | `find_project` | Find public project candidates by ID, repository/homepage URL, or text; the host selects the intended project. | Public BadgeApp GETs |
-| `get_criteria` | Read the bundled criteria by badge level and criterion. | Offline |
-| `get_project_progress` | Read all-level percentages or selected saved answers and progress, with source and fetch time. | Public BadgeApp GETs |
-| `get_project_badge_status` | Quickly read one badge family's status, progress and project-record update time. | Public BadgeApp JSON GET |
+| `get_criteria` | List the bundled criteria of a badge level, or read the full text of selected criteria or a category. | Offline |
+| `get_project_status` | Read a project's badge level, the percentage and achievement date at each of the six levels, and its last update time. | Public BadgeApp GET |
+| `get_project_answers` | Read the answers a project has saved for one badge level, optionally filtered by criterion or status, with source and fetch time. | Public BadgeApp GET |
 | `get_project_badge_svg` | Retrieve a badge SVG and dynamic README embed snippet for one badge family. | Public BadgeApp SVG GET |
 | `build_draft` | Create or patch a document supplied by the host. | Offline; no stored files changed |
 | `read_draft` | Read the complete locally stored draft for a project. | Local read |
@@ -54,21 +54,21 @@ Starting the executable directly in a terminal waits for MCP messages; it is not
 | `validate_draft` | Check supplied answers against the bundled criteria's mechanical requirements. | Offline; may read a stored draft |
 | `prepare_update_url` | Generate a proposed edit-page URL and report included/excluded fields. | Public BadgeApp GETs; no remote write |
 
-See the [tool specification](https://github.com/reponomics/best-practices-mcp/blob/main/docs/specification.md) and [payload contracts](https://github.com/reponomics/best-practices-mcp/blob/main/docs/contracts.md) for arguments, results and errors.
+See the [tool specification](https://github.com/reponomics/best-practices-mcp/blob/main/docs/reference/specification.md) and [payload contracts](https://github.com/reponomics/best-practices-mcp/blob/main/docs/reference/contracts.md) for arguments, results and errors.
 
 ## Usage notes
 
 - **Compatibility:** Python 3.11 is the supported minimum. The CI compatibility matrix targets Python 3.11/3.12 on Linux, macOS and Windows. The protocol baseline is MCP `2026-07-28`; transport is stdio. Node and Ruby are not required to run the server.
-- **Catalog and language:** criteria are bundled from a pinned upstream revision, not fetched live. The current catalog is English and generated edit links use English paths. Translation support is [proposed](https://github.com/reponomics/best-practices-mcp/blob/main/docs/roadmap.md#proposed).
+- **Catalog and language:** criteria are bundled from a pinned upstream revision, not fetched live. The current catalog is English and generated edit links use English paths. Translation support is [proposed](https://github.com/reponomics/best-practices-mcp/blob/main/docs/planning/roadmap.md#proposed).
 - **Validation is advisory:** it checks mechanical requirements, not whether claims are true or evidence is sufficient. Validation is optional and does not gate artifact generation.
-- **Review in the browser:** artifacts include eligible supplied fields even when they match saved values. Reports describe what was included or excluded, not what BadgeApp will retain or save. BadgeApp documents trimming leading/trailing whitespace from URL-proposed justifications. See [transfer rules](https://github.com/reponomics/best-practices-mcp/blob/main/docs/transfer-rules.md) for override behavior.
+- **Review in the browser:** artifacts include eligible supplied fields even when they match saved values. Reports describe what was included or excluded, not what BadgeApp will retain or save. BadgeApp documents trimming leading/trailing whitespace from URL-proposed justifications. See [transfer rules](https://github.com/reponomics/best-practices-mcp/blob/main/docs/reference/transfer-rules.md) for override behavior.
 - **Authentication stays in your browser:** public reads need no BadgeApp credentials. Applying proposals requires your own authenticated session and appropriate project permissions.
 
-### Badge status and README images
+### Project status and README images
 
-After selecting a project, `get_project_badge_status(project_id=123)` reads its compact Best Practices status; set `family="baseline"` for Baseline. Best Practices reports tiered progress, while the Baseline percentage refers only to level 1. Use `get_project_progress` for individual-level percentages, all-six-level summaries or saved criterion answers. The project's `updated_at` reports its record update time; `fetched_at` records when the response was retrieved.
+After selecting a project, `get_project_status(project_id=123)` reports the badge level it holds, the percentage complete and achievement date at each of the six levels, and when the entry was last updated; `fetched_at` records when the response was retrieved. It is the tool for any question about where a project stands. Use `get_project_answers` with a level for the answers saved to individual criteria.
 
-`get_project_badge_svg(project_id=123, family="best_practices")` returns SVG text, a dynamic image URL and a Markdown snippet. The host can insert the snippet in a README or save the SVG. Prefer the dynamic URL for a badge that follows future project changes; downloaded SVG is a snapshot. The server does not render SVG or modify repository files. Both tools support `best_practices` and `baseline`, and neither creates drafts.
+`get_project_badge_svg(project_id=123, family="best_practices")` returns SVG text, a dynamic image URL and a Markdown snippet. The host can insert the snippet in a README or save the SVG. Prefer the dynamic URL for a badge that follows future project changes; downloaded SVG is a snapshot. The server does not render SVG or modify repository files. The tool supports `best_practices` and `baseline` and creates no drafts.
 
 ### Optional draft storage
 
@@ -82,7 +82,7 @@ Default storage locations are:
 | Linux | `$XDG_DATA_HOME/bestpractices-mcp` when XDG is absolute; otherwise `~/.local/share/bestpractices-mcp` |
 | Windows | `%LOCALAPPDATA%/bestpractices-mcp` |
 
-To choose another location, set `BESTPRACTICES_DATA_DIR` in the server's environment through your MCP host. Use an absolute path; `~` is not expanded. Avoid simultaneous writers from separate server processes or external editors to the same project draft. After an uncertain update result, use `read_draft` before deciding whether to issue another patch. See [persistence boundaries](https://github.com/reponomics/best-practices-mcp/blob/main/docs/architecture.md#optional-local-persistence).
+To choose another location, set `BESTPRACTICES_DATA_DIR` in the server's environment through your MCP host. Use an absolute path; `~` is not expanded. Avoid simultaneous writers from separate server processes or external editors to the same project draft. After an uncertain update result, use `read_draft` before deciding whether to issue another patch. See [persistence boundaries](https://github.com/reponomics/best-practices-mcp/blob/main/docs/reference/architecture.md#draft-store).
 
 If you prefer a dot directory in your home directory, add an `env` entry to the server configuration, for example `"env": {"BESTPRACTICES_DATA_DIR": "/home/yourname/.bestpractices-mcp"}`. Replace that example with your actual absolute home path (on macOS, typically `/Users/yourname/.bestpractices-mcp`). Changing the setting does not move existing drafts: either keep using their original directory or stop the server instances and move the existing `projects` directory into the new data directory, taking care not to overwrite drafts already there.
 
@@ -95,14 +95,14 @@ Reports are voluntary and self-reported. We may summarize them in the [interacti
 ## Documentation
 
 - [Documentation index](https://github.com/reponomics/best-practices-mcp/blob/main/docs/README.md): the complete guide to maintained documentation and historical records.
-- [Design](https://github.com/reponomics/best-practices-mcp/blob/main/docs/design.md) and [architecture](https://github.com/reponomics/best-practices-mcp/blob/main/docs/architecture.md): responsibilities, data flow and the human-review boundary.
-- [Specification](https://github.com/reponomics/best-practices-mcp/blob/main/docs/specification.md) and [contracts](https://github.com/reponomics/best-practices-mcp/blob/main/docs/contracts.md): tool behavior, exact payloads and operational limits.
-- [Upstream compatibility](https://github.com/reponomics/best-practices-mcp/blob/main/docs/upstream-compatibility.md), [transfer rules](https://github.com/reponomics/best-practices-mcp/blob/main/docs/transfer-rules.md) and [schema compatibility](https://github.com/reponomics/best-practices-mcp/blob/main/docs/schema-compatibility.md): supported procedures and interoperability details.
+- [Design](https://github.com/reponomics/best-practices-mcp/blob/main/docs/reference/design.md) and [architecture](https://github.com/reponomics/best-practices-mcp/blob/main/docs/reference/architecture.md): responsibilities, data flow and the human-review boundary.
+- [Specification](https://github.com/reponomics/best-practices-mcp/blob/main/docs/reference/specification.md) and [contracts](https://github.com/reponomics/best-practices-mcp/blob/main/docs/reference/contracts.md): tool behavior, exact payloads and operational limits.
+- [Upstream compatibility](https://github.com/reponomics/best-practices-mcp/blob/main/docs/reference/upstream-compatibility.md), [transfer rules](https://github.com/reponomics/best-practices-mcp/blob/main/docs/reference/transfer-rules.md) and [schema compatibility](https://github.com/reponomics/best-practices-mcp/blob/main/docs/reference/schema-compatibility.md): supported procedures and interoperability details.
 - [Contributing](https://github.com/reponomics/best-practices-mcp/blob/main/CONTRIBUTING.md): development setup, validation and submitting changes.
-- [Live browser QA](https://github.com/reponomics/best-practices-mcp/blob/main/docs/live-browser-qa.md): a supervised check of generated artifacts against BadgeApp.
-- [Release procedure](https://github.com/reponomics/best-practices-mcp/blob/main/docs/releasing.md): qualification, publication and release QA.
-- [Release verification](https://github.com/reponomics/best-practices-mcp/blob/main/docs/verification.md): verify downloaded assets, publisher identity, provenance and SBOMs, and understand the limits of these claims.
-- [Roadmap](https://github.com/reponomics/best-practices-mcp/blob/main/docs/roadmap.md): planned work and proposals under consideration.
+- [Live browser QA](https://github.com/reponomics/best-practices-mcp/blob/main/docs/testing/live-browser-qa.md): a supervised check of generated artifacts against BadgeApp.
+- [Release procedure](https://github.com/reponomics/best-practices-mcp/blob/main/docs/release/releasing.md): qualification, publication and release QA.
+- [Release verification](https://github.com/reponomics/best-practices-mcp/blob/main/docs/release/verification.md): verify downloaded assets, publisher identity, provenance and SBOMs, and understand the limits of these claims.
+- [Roadmap](https://github.com/reponomics/best-practices-mcp/blob/main/docs/planning/roadmap.md): planned work and proposals under consideration.
 
 ## License
 
